@@ -1,0 +1,409 @@
+---
+title: "Covid-19 Cases Analysis"
+author: "Adib Sobhanian"
+date: "2024-02-09"
+output: html_document
+---
+## Introduction
+This analysis aims to explore the COVID-19 data sourced from the Johns Hopkins University repository. The data includes global and US confirmed cases as well as deaths, which will be analyzed and visualized to gain insights into the pandemic's progression.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(stringr)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+```
+
+## Retrieving Data from Johns Hopkins University Repository
+
+In this section, we will retrieve the latest COVID-19 data from the Johns Hopkins University repository. The data is divided into four files: global confirmed cases, global deaths, US confirmed cases, and US deaths.
+```{r get_jhu_data}
+## Get current data in the four files
+## They all begin the same way
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c("time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_global.csv", 
+                "time_series_covid19_confirmed_US.csv",
+                "time_series_covid19_deaths_US.csv")
+urls <- str_c(url_in, file_names)
+```
+
+lets read in the data and see what we have.
+```{r urls}
+# Display the URLs
+urls
+```
+
+By executing the above code chunk, you will obtain the URLs for the respective data files, which will then be used to import the data in the subsequent code chunks.
+```{r import_data, message=FALSE}
+# Importing the data files
+global_cases <- read_csv(urls[1])
+global_deaths <- read_csv(urls[2])
+US_cases <- read_csv(urls[3])
+US_deaths <- read_csv(urls[4])
+```
+
+## Exploring Raw Data
+Let's examine the raw data obtained from the Johns Hopkins University repository to understand its structure and contents.
+```{r looking_into_raw_data}
+# Displaying global cases and deaths data
+global_cases
+global_deaths
+```
+
+After reviewing the raw data for global cases and deaths, we will tidy up these datasets by restructuring them and removing unnecessary columns.
+``` {r tidy_global_data}
+# Tidying global cases data
+global_cases <- global_cases %>% 
+  pivot_longer(cols = -c(`Province/State`,`Country/Region`,Lat, Long),
+      names_to = "date",
+      values_to = "cases") %>%
+  select (-c(Lat, Long))
+
+# Tidying global deaths data
+global_deaths <- global_deaths %>% 
+  pivot_longer(cols = -c(`Province/State`,`Country/Region`,Lat, Long),
+      names_to = "date",
+      values_to = "deaths") %>%
+  select (-c(Lat, Long))
+
+# Combining global cases and deaths data
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(`Country/Region` = `Country/Region`,
+         `Province/State`= `Province/State`) %>%
+  mutate(date = mdy(date))
+
+# Displaying the tidied global data
+global
+summary(global)
+```
+
+If you pay attention in summary you will notice that there have been dates that minimum number of positive cases were zero, you can use the following command to filter out only positive cases and check summary(global) again
+
+``` {r global_cases_filter}
+global <- global %>% filter(cases > 0)
+```
+
+To make sure the maximum number of positive cases in one day is not a typo you can use following filter command with an arbitrary number to check how many days there were positive cases more than the set value. 
+
+``` {r global_cases_filter2}
+global %>% filter(cases > 100000000)
+```
+
+## Exploring and Tidying US Data
+Next, we'll focus on exploring and tidying the US-specific data for both cases and deaths.
+``` {r}
+US_cases
+```
+
+We can start filtering things that we don't need out. convert the date data into Date object instead of Char
+``` {r tidy_US_cases_data}
+# Tidying US cases data
+US_cases <- US_cases %>%
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+# Displaying tidied US cases data
+US_cases
+```
+
+Similarly, we'll tidy the US deaths data, ensuring consistency in format and content.
+``` {r tidy_US_deaths_data}
+# Tidying US deaths data
+US_deaths
+US_deaths <- US_deaths %>%
+  pivot_longer(cols = -(UID:Population),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+# Displaying tidied US deaths data
+US_deaths
+```
+
+
+Now, let's merge the tidied US cases and deaths data into a single dataset for further analysis.
+```{r joining_US_cases_deaths}
+US <- US_cases %>%
+  full_join(US_deaths)
+```
+
+### Adding Population Data to Global Dataset
+To perform comparative analysis across countries, we need to add population data to our global dataset. We'll import population data from the same source as our COVID-19 data and merge it with our global dataset.
+```{r combining}
+global <- global %>%
+  unite("Combined_Key",
+  c('Province/State', 'Country/Region'),
+  sep = ", ",
+  na.rm = TRUE,
+  remove = FALSE)
+```
+
+Now we can import the population data that we found on the website from the same source to our global data.
+```{r importing_population_data}
+# Define the URL for population data
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+# Read the population data from the URL
+uid <- read.csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key , code3, iso2, iso3, Admin2))
+
+# Rename columns in global dataset for consistency
+global <- global %>%
+  rename(Province_State = `Province/State`, Country_Region = `Country/Region`)
+
+# Merge population data with global dataset
+global <- global %>%
+  left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID, FIPS)) %>%
+  select(Province_State, Country_Region, date, cases, deaths, Population, Combined_Key)
+
+# Displaying the updated global dataset
+global
+```
+Now that we have added population data to our global dataset, we can proceed with analyzing the data.
+
+## Analyzing US Data
+Let's start by analyzing the US data, examining both overall trends and state-level details.
+```{r US_by_state}
+# Aggregate US data by state and date
+US_by_state <- US %>%
+    group_by(Province_State, Country_Region, date) %>%
+    summarize(cases= sum(cases), deaths= sum(deaths), Population= sum(Population)) %>%
+    mutate(deaths_per_mill= deaths* 1000000 / Population) %>%
+    select(Province_State, Country_Region, date, cases, deaths, deaths_per_mill, Population) %>%
+    ungroup()
+
+# Displaying the aggregated US data
+US_by_state
+```
+
+Next, let's analyze the total COVID-19 cases and deaths for the entire US.
+```{r US_total}
+# Aggregate total US data
+US_totals <- US_by_state %>%
+    group_by(Country_Region, date) %>%
+    summarize(cases= sum(cases), deaths= sum(deaths), Population= sum(Population)) %>%
+    mutate(deaths_per_mill= deaths * 1000000 / Population) %>%
+    select(Country_Region, date, cases, deaths, deaths_per_mill, Population) %>%
+    ungroup()
+
+# Displaying the total US data
+US_totals
+```
+
+We can also see the end of the table by this command
+```{r}
+tail(US_totals)
+```
+
+## Visuals
+Now We can also visualize the total number of cases and deaths in the US over time.
+```{r US_totals_visuals}
+# Visualizing total US cases and deaths over time
+US_totals %>%
+    filter(cases > 0) %>%
+    ggplot(aes(x = date, y= cases)) +
+    geom_line(aes(color= "cases")) +
+    geom_point(aes(color= "cases")) +
+    geom_line(aes(y= deaths, color= "deaths")) +
+    geom_point(aes(y= deaths, color= "deaths")) +
+    scale_y_log10() +
+    theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+    labs(title = "COVID19 in US", y= NULL)
+```
+
+We'll continue the analysis by examining specific states, such as New York, and exploring trends at the state level.
+```{r US_NY_visuals}
+# Visualizing COVID-19 trends in New York
+state <- "New York"
+US_by_state %>%
+    filter(Province_State == state) %>%
+    filter(cases > 0) %>%
+    ggplot(aes(x = date, y= cases)) +
+    geom_line(aes(color= "cases")) +
+    geom_point(aes(color= "cases")) +
+    geom_line(aes(y= deaths, color= "deaths")) +
+    geom_point(aes(y= deaths, color= "deaths")) +
+    scale_y_log10() +
+    theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+    labs(title = str_c("COVID19 in ", state), y= NULL)
+```
+
+Now that we have done our basic visualization before we do any modeling We notice that the number of cases and deaths are flattening out so we can do an analysis on that by adding new lag variables to our data
+```{r flattening_cases_deaths}
+max(US_totals$date)
+max(US_totals$deaths)
+US_by_state <- US_by_state %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths= deaths - lag(deaths))
+US_totals <- US_totals %>%
+  mutate(new_cases= cases - lag(cases),
+         new_deaths= deaths- lag(deaths))
+
+tail(US_totals)
+tail(US_totals %>% select(new_cases, new_deaths, everything()))
+```
+
+
+Now that we have added the new variables lets look at the new visuals to see what that does
+```{r new_US_total_visuals}
+US_totals %>%
+    ggplot(aes(x = date, y= cases)) +
+    geom_line(aes(color= "new_cases")) +
+    geom_point(aes(color= "new_cases")) +
+    geom_line(aes(y= new_deaths, color= "new_deaths")) +
+    geom_point(aes(y= new_deaths, color= "new_deaths")) +
+    scale_y_log10() +
+    theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+    labs(title = "COVID19 in US", y= NULL)
+```
+
+We could do this for any state or country as well to do a comparassion for now lets look at New York city again to compare.
+```{r new_US_NY_visuals}
+state <- "New York"
+US_by_state %>%
+    filter(Province_State == state) %>%
+    filter(cases > 0) %>%
+    ggplot(aes(x = date, y= cases)) +
+    geom_line(aes(color= "new_cases")) +
+    geom_point(aes(color= "new_cases")) +
+    geom_line(aes(y= new_deaths, color= "new_deaths")) +
+    geom_point(aes(y= new_deaths, color= "new_deaths")) +
+    scale_y_log10() +
+    theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+    labs(title = str_c("COVID19 in ", state), y= NULL)
+```
+
+We'll also analyze the top states with the smallest and largest deaths per thousand, providing insights into regional disparities.
+```{r}
+# Analyzing states with smallest and largest deaths per thousand
+US_state_totals <- US_by_state %>%
+  group_by(Province_State) %>%
+  summarize(deaths= max(deaths), cases= max(cases), population= max(Population), 
+            cases_per_thou= 1000* cases / population, 
+            deaths_per_thou= 1000* deaths / population) %>%
+  filter(cases > 0, population > 0)
+
+# Displaying states with smallest and largest deaths per thousand
+US_state_totals
+```
+
+We can find the top 10 states with smallest death/thousand like this
+```{r}
+US_state_totals %>%
+  slice_min(deaths_per_thou, n = 10) %>%
+select(deaths_per_thou, cases_per_thou, everything())
+```
+And the top 10 states with largest death/thousand like this
+```{r}
+US_state_totals %>%
+  slice_max(deaths_per_thou, n = 20) %>%
+  select(deaths_per_thou, cases_per_thou, everything())
+```
+
+
+
+
+### Modeling the data
+So this is part of the iterative process that you will go through as you analyze your data. You may need to introduce more variables here to build your model, depending on what you have found out so far. What do you want to consider? Do you want to consider population density, extent of the lockdown, political affiliation, climate of the area? There's all sorts of things that you may want to introduce and add as variables into your model.
+
+Now, for purposes of our demonstration, we are going to choose a very simple thing that we don't have to add any variables to our data for. So I'm just going to look at, right now, at a linear model. So a linear model means the variable that I want to look at is predicted by other variables in a linear fashion. So for instance, here I'm going to look at the deaths per 1,000 being a function of the cases per 1,000 and see what I get out of that model.
+```{r linear_mod_US_state_totals}
+mod <- lm(deaths_per_thou ~ cases_per_thou, data = US_state_totals)
+summary(mod)
+```
+We can see the coefficients and p-values and so forth. So we can see that basically what this is telling us is that this model would say our deaths per 1,000 are -0.36167 plus 0.01133 times the number of cases per 1,000
+
+If we wanna see how many cases per thousand are smallest and how many are the largest
+```{r}
+US_state_totals %>% slice_min(cases_per_thou)
+US_state_totals %>% slice_max(cases_per_thou)
+```
+
+Now let create a data set with prediction added in there
+```{r}
+# Create a grid of cases per thousand for prediction
+x_grid <- seq(1, 435)
+
+# Create a new dataframe with the grid and use the model to predict deaths_per_thou
+new_df <- tibble(cases_per_thou = x_grid)
+
+# Predict deaths_per_thou using the model
+new_df <- new_df %>% 
+  mutate(pred = predict(mod, newdata = new_df))
+
+# Combine the predicted values with the US_state_totals dataframe
+US_tot_w_pred <- US_state_totals %>% 
+  mutate(pred = predict(mod))
+
+# Plotting
+US_tot_w_pred %>% 
+  ggplot() +
+  geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "blue") +
+  geom_line(aes(x = cases_per_thou, y = pred), color = "red") +
+  labs(title = "Predicted vs. Actual Deaths per Thousand",
+       x = "Cases per Thousand",
+       y = "Deaths per Thousand")
+```
+
+## Analysis
+
+### Global Trends:
+Trend Analysis: The global COVID-19 dataset revealed significant trends in the spread of the virus over time. Visualizations showed an exponential increase in cases and deaths during the initial phases of the pandemic, followed by periods of flattening or decline.
+
+Population Impact: Incorporating population data allowed for a more nuanced understanding of the impact of COVID-19 across different regions. By analyzing cases and deaths per thousand population, we could better assess the severity of the outbreak in various countries and states.
+
+### US-Specific Insights:
+State-Level Analysis: Examination of COVID-19 data at the state level in the US highlighted regional disparities in the spread and impact of the virus. States like New York experienced significant outbreaks early in the pandemic, while others faced less severe consequences.
+
+Trend Identification: Modeling the relationship between COVID-19 cases and deaths using linear regression provided insights into the trajectory of the pandemic. By analyzing trends in new cases and deaths over time, we could identify periods of acceleration, deceleration, and potential stabilization.
+
+### Key Findings:
+Regional Disparities: The analysis revealed significant regional disparities in COVID-19 outcomes, with some states experiencing higher death rates per thousand population compared to others.
+
+### Trend Analysis: 
+Trends in new cases and deaths provided valuable insights into the effectiveness of public health measures, such as lockdowns, social distancing, and vaccination efforts.
+
+## Bias
+
+### Sources of Bias:
+Selection Bias: The data may not be representative of the entire population, leading to skewed results. For example, if testing is more readily available in certain regions or demographic groups, it could lead to underrepresentation or overrepresentation of cases and deaths.
+Reporting Bias: Inaccurate or incomplete reporting of COVID-19 cases and deaths could introduce bias into the analysis. Variations in reporting standards between regions or countries may affect the reliability and comparability of the data.
+Confounding Variables: Failure to account for confounding variables, such as testing capacity, healthcare infrastructure, and public health interventions, could confound the relationship between COVID-19 cases, deaths, and other factors.
+
+### Prevention Strategies:
+Random Sampling: Implement random sampling techniques to ensure that the data collected is representative of the entire population. This can help mitigate selection bias by reducing the likelihood of overrepresentation or underrepresentation of certain groups.
+Standardized Reporting: Establish standardized reporting protocols to ensure consistency and accuracy in COVID-19 data collection and reporting. Collaboration between local, national, and international health agencies can help harmonize reporting standards and improve data quality.
+Control for Confounding Variables: When conducting data analysis, carefully control for confounding variables by including them in the analysis or conducting stratified analyses. This can help identify and account for potential biases introduced by factors such as testing capacity, healthcare access, and public health interventions.
+By implementing these prevention strategies, future data analyses can minimize bias and enhance the reliability and validity of findings, ultimately improving our understanding of the COVID-19 pandemic and guiding effective public health responses.
+
+## Conclusion:
+In conclusion, the analysis of COVID-19 data highlighted the complex and dynamic nature of the pandemic. While global trends showed initial surges followed by fluctuations, state-level analysis in the US revealed varying degrees of impact across regions. By leveraging population data and trend analysis, we gained valuable insights into the factors influencing the spread and severity of COVID-19. Moving forward, continued monitoring and analysis of data will be crucial for informing public health strategies and mitigating the impact of the ongoing pandemic.
+
+## Future Directions:
+Further Research: Future research could explore additional variables, such as vaccination rates, healthcare infrastructure, and socio-economic factors, to better understand the determinants of COVID-19 outcomes.
+
+Policy Implications: Insights gained from the analysis can inform policy decisions aimed at controlling the spread of the virus and minimizing its impact on vulnerable populations.
+
+Continued Monitoring: Continued monitoring of COVID-19 data is essential for detecting emerging trends, identifying hotspots, and guiding targeted interventions to prevent further transmission of the virus.
+
+By leveraging data-driven insights and adopting evidence-based strategies, we can work towards effectively managing the COVID-19 pandemic and safeguarding public health globally.
+
+
+```{r session_info}
+sessionInfo()
+```
+
+
